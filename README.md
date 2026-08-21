@@ -38,11 +38,12 @@ A Python-based hybrid AI assistant that integrates ultra-fast cloud inference vi
    - **Groq (Recommended for Speed)**: 
      - Get an API key from [console.groq.com](https://console.groq.com/keys)
      - Set `ASSISTANT_USE_GROQ=true` and `GROQ_API_KEY=your_key` in `.env`
-   - **Ollama (For 100% Local Privacy)**:
+     - *(Highly Recommended: Also complete the Ollama setup below so your assistant can fall back to local processing if Groq hits rate limits or your internet drops!)*
+   - **Ollama (For 100% Local Privacy or Fallback)**:
      - Download from [ollama.ai](https://ollama.ai)
      - Pull a model: `ollama pull qwen2.5-coder:7b`
      - Start Ollama: `ollama serve`
-     - Set `ASSISTANT_USE_GROQ=false` in `.env`
+     - Set `ASSISTANT_USE_GROQ=false` in `.env` (if using exclusively local)
 
 3. **Advanced Configuration**:
    - Edit `.env` to override model names without changing code:

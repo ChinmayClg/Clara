@@ -46,6 +46,10 @@ class Brain:
         self._active_project_root = None  # Track the project root for path resolution
         self._read_files = set()  # Track files that have been read (for read-before-write)
         
+        # Groq API key management
+        self.groq_api_keys = Config.get_groq_api_keys()
+        self.current_groq_key_index = 0
+        
         # Blueprint approval state
         self._pending_blueprint = None   # The blueprint text awaiting user approval
         self._pending_request = None     # The original user request for the pending blueprint
@@ -103,10 +107,13 @@ PROACTIVE & IMMERSIVE: When the user gives a vague or open-ended request (like "
 - "build an app" → choose an exciting, useful app concept with rich UI, dark theme, and smooth animations.
 - Always go above and beyond. Make the user say "wow".
 
-PERSONALITY:
+PERSONALITY & SPOKEN CONVERSATION RULES:
+- Since your text is read aloud by a Text-to-Speech Voice Engine, DO NOT use markdown formatting like **bold**, *italics*, or code fences in your conversational response.
+- Speak like a human co-worker: use natural contractions (I'm, you're, we'll) and casual transitions (Got it, Sure, Hmm, Oh).
+- Keep sentences short, punchy, and easy to listen to.
+- Avoid robotic phrases like "As an AI..." or "I have processed your request."
 - For ACTIONS: Your primary job is EXECUTING tasks with TOOLS. You must call tools to perform actions.
-- For QUESTIONS: Answer helpfully, clearly, and conversationally. You can give longer, detailed answers.
-- NEVER output code blocks in your conversational response. Use the write_file tool instead!
+- For QUESTIONS: Answer helpfully, clearly, and conversationally. You can give longer, detailed answers, but format them for speech.
 - Be concise but CONVERSATIONAL. When you finish tasks (like coding a file), DO NOT say "Done" or "Completed 3 tasks."
 - Instead, say something natural and friendly like: "I've just scaffolded the new React app for you!" or "I've updated the styles in App.css, let me know how it looks."
 - Be helpful: if a task needs multiple steps, do them all.
@@ -167,6 +174,23 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
                             }
                         },
                         "required": ["app_name"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "take_screenshot",
+                    "description": "Take a screenshot of the user's current screen and save it to their Desktop. Use when the user asks you to take a screenshot or capture the screen.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {
+                                "type": "string",
+                                "description": "(Optional) The name of the file to save as (e.g., 'screenshot.png'). Leave empty for auto-generated timestamp."
+                            }
+                        },
+                        "required": []
                     }
                 }
             },
@@ -315,9 +339,9 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
     def _validate_llm_connection(self):
         """Validate LLM connection (Ollama or Groq)"""
         if Config.USE_GROQ:
-            if not Config.GROQ_API_KEY:
-                logger.error("USE_GROQ is True but GROQ_API_KEY is missing!")
-                raise RuntimeError("Groq API key is missing. Please set GROQ_API_KEY in your .env file.")
+            if not self.groq_api_keys:
+                logger.error("USE_GROQ is True but no Groq API keys found!")
+                raise RuntimeError("Groq API key is missing. Please set GROQ_API_KEYS in your .env file.")
             logger.info("Using Groq API for LLM connection.")
             return
 
@@ -552,13 +576,14 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
         # --- PRIORITY 3: Action keywords → NOT conversational ---
         action_keywords = [
             'open', 'launch', 'start', 'run',  # app/command actions
-            'create', 'build', 'make', 'develop', 'scaffold', 'generate',  # creation
-            'write', 'code', 'program',  # coding
-            'fix', 'debug', 'update', 'modify', 'change', 'improve', 'enhance',  # modification
-            'install', 'download', 'delete', 'remove',  # system actions
+            'create', 'build', 'make', 'develop', 'scaffold', 'generate', 'implement',  # creation
+            'write', 'code', 'program', 'refactor', 'solve', 'rewrite',  # coding
+            'fix', 'debug', 'update', 'modify', 'change', 'improve', 'enhance', 'add', 'insert', 'put', 'edit', 'append', 'replace',  # modification
+            'install', 'download', 'delete', 'remove', 'uninstall',  # system actions
             'read file', 'read_file', 'write_file', 'gather_context',  # direct tool names
             'search the web', 'search online', 'google',  # web search
             'go to', 'visit', 'navigate to',  # URL navigation
+            'take screenshot', 'screenshot', 'capture screen', 'take a screenshot', 'capture the screen',  # screenshot actions
         ]
         
         # Use word boundaries to avoid false positives (e.g., "start" in "startup")
@@ -572,10 +597,24 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
             r'^(?:explain|describe|define|clarify|elaborate)\b',  # explanations
             r'^(?:help me (?:understand|think|brainstorm|decide|choose|pick))\b',  # brainstorming
             r'\b(?:ideas? for|suggestions? for|advice|opinion|thoughts? on|think about)\b',  # idea requests
-            r'^(?:thank|thanks|okay|ok|cool|great|nice|awesome|perfect|got it|understood)\b',  # acknowledgements
+            r'^(?:thank|thanks|okay|ok|cool|great|nice|awesome|perfect|got it|understood|alright)\b',  # acknowledgements
             r'\b(?:meaning of|difference between|pros and cons|advantages|disadvantages)\b',  # knowledge
             r'^(?:hey |hi |hello )?(?:can you |could you )?(?:suggest|recommend|give|tell|share|provide)\b',  # request patterns
             r'\b(?:best (?:way|language|framework|tool|option|practice)|recommend|between .+ and )\b',  # comparison/recommendation
+            
+            # Small talk & feedback
+            r'\b(?:good job|well done|excellent|amazing|good boy|good girl|nice work|great work|awesome|beautiful|perfect)\b',
+            r'\b(?:how are you|how is it going|how was your|how are things|whats up|what\'s up|sup|wassup)\b',
+            r'\b(?:my day|my night|my morning|i feel|i am doing|i had a)\b',
+            
+            # Additional conversational edge cases
+            r'^(?:hello|hi|hey|greetings|morning|afternoon|evening|goodnight|good night|bye|goodbye|see ya|cya)\b',
+            r'\b(?:who are you|what are you|who made you|are you a(?:n)? (?:ai|robot|human))\b',
+            r'\b(?:joke|funny|laugh|story|poem|sing|riddle)\b',
+            r'^(?:sorry|my bad|my fault|apologies|excuse me)\b',
+            r'\b(?:i love you|i hate you|you suck|you are (?:smart|dumb|stupid|cool|awesome|great|amazing))\b',
+            r'\b(?:what(?: do)? you think|do you know|can you talk|can we chat)\b',
+            r'^(?:yes|no|maybe|probably|definitely|of course|sure thing|absolutely|not really)\b',
         ]
         
         for pattern in conversational_patterns:
@@ -675,11 +714,16 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
             models_to_try.append(self.fallback_model)
         
         last_error = None
+        force_ollama = False
         
         for current_model in models_to_try:
-            for attempt in range(Config.LLM_MAX_RETRIES):
+            keys_tried = 0
+            
+            # Using a while loop so rate limit key-swaps don't consume general "attempt" counts
+            attempt = 0
+            while attempt < Config.LLM_MAX_RETRIES:
                 try:
-                    if Config.USE_GROQ and Config.GROQ_API_KEY:
+                    if Config.USE_GROQ and len(self.groq_api_keys) > 0 and not force_ollama:
                         return self._execute_groq_call(current_model, messages, tools)
                     
                     # Streaming mode for Ollama
@@ -699,14 +743,26 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
                     last_error = e
                     error_str = str(e).lower()
                     
-                    # Don't retry on rate limit errors — they won't resolve with retries
-                    if '429' in str(e) or 'rate_limit' in error_str or 'rate limit' in error_str:
-                        logger.warning(f"Rate limit hit (model={current_model}): {e}")
-                        raise e
+                    # Handle rate limit errors (Groq 429)
+                    if Config.USE_GROQ and not force_ollama and ('429' in str(e) or 'rate_limit' in error_str or 'rate limit' in error_str):
+                        keys_tried += 1
+                        if keys_tried < len(self.groq_api_keys):
+                            # Swap to the next key and immediately retry
+                            self.current_groq_key_index = (self.current_groq_key_index + 1) % len(self.groq_api_keys)
+                            logger.info(f"Rate limit hit. Swapping to Groq API key index {self.current_groq_key_index} and retrying...")
+                            continue # Do NOT increment attempt
+                        else:
+                            logger.warning("All Groq API keys exhausted! Falling back to local Ollama...")
+                            force_ollama = True
+                            if current_model != self.fallback_model:
+                                break # Move to the fallback model in the outer loop
+                            else:
+                                continue # We are already on the fallback model, just loop around and it will use Ollama
                     
                     delay = Config.LLM_RETRY_DELAY * (2 ** attempt)
                     logger.warning(f"LLM call failed (model={current_model}, attempt {attempt+1}): {e}. Retrying in {delay}s...")
                     time.sleep(delay)
+                    attempt += 1
             
             logger.warning(f"All retries exhausted for model '{current_model}'. Trying fallback...")
         
@@ -744,7 +800,11 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
     def _execute_groq_call(self, model, messages, tools=None):
         """Execute chat completion using the Groq API with optimized parameters."""
         from groq import Groq
-        client = Groq(api_key=Config.GROQ_API_KEY)
+        if not self.groq_api_keys:
+            raise ValueError("No Groq API keys available")
+            
+        current_key = self.groq_api_keys[self.current_groq_key_index]
+        client = Groq(api_key=current_key)
         
         # Override the model string with the Groq counterpart
         if model == self.primary_model or model == self.fallback_model:
@@ -764,12 +824,30 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
         
         # Cap max_tokens to fit within Groq's TPM limit (prevents 413 errors)
         max_tokens = self._cap_max_tokens_for_groq(messages, desired_max_tokens, tools)
+        
+        # Sanitize messages for Groq API (Groq strictly requires 'arguments' to be a string)
+        import copy
+        import json
+        safe_messages = copy.deepcopy(messages)
+        for m in safe_messages:
+            # Remove tool_calls completely if it is None (prevents Groq 400 nullable error)
+            if 'tool_calls' in m and m['tool_calls'] is None:
+                del m['tool_calls']
+            elif m.get('tool_calls'):
+                for tc in m['tool_calls']:
+                    # Groq requires 'type': 'function' and a valid string 'id' for every tool call
+                    if 'type' not in tc:
+                        tc['type'] = 'function'
+                    if 'id' not in tc or not tc['id']:
+                        tc['id'] = 'call_extracted'
+                    if isinstance(tc.get('function', {}).get('arguments'), dict):
+                        tc['function']['arguments'] = json.dumps(tc['function']['arguments'])
             
         if Config.STREAM_RESPONSES and self.on_stream_token and not tools:
             # Streaming conversation: use warmer temperature for natural responses
             stream = client.chat.completions.create(
                 model=groq_model,
-                messages=messages,
+                messages=safe_messages,
                 temperature=0.5,
                 max_tokens=max_tokens,
                 stream=True
@@ -791,7 +869,7 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
         
         kwargs = {
             "model": groq_model,
-            "messages": messages,
+            "messages": safe_messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
@@ -877,9 +955,10 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
                     args = tc.function.arguments
                 formatted_tool_calls.append({
                     'id': tc.id,  # Required by Groq for tool result messages
+                    'type': 'function',
                     'function': {
                         'name': tc.function.name,
-                        'arguments': args
+                        'arguments': tc.function.arguments
                     }
                 })
         
@@ -1011,6 +1090,7 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
             'list_dir': ['dir_path'],
             'run_command': ['command'],
             'gather_context': ['target_path'],
+            'take_screenshot': ['filename'],
         }
         
         tool_names_pattern = '|'.join(re.escape(t) for t in known_tools.keys())
@@ -1196,11 +1276,17 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
         
         logger.info(f"Calling tool: {function_name} with {args}")
         
+        # Ensure args is a dictionary to prevent .get() AttributeErrors
+        if not isinstance(args, dict):
+            args = {}
+        
         try:
             if function_name == 'open_app':
                 return self.system.open_app(args.get('app_name'))
             elif function_name == 'open_url':
                 return self.system.open_url(args.get('url'))
+            elif function_name == 'take_screenshot':
+                return self.system.take_screenshot(args.get('filename'))
             elif function_name == 'search_web':
                 return self.system.search_web(args.get('query'))
             elif function_name == 'write_file':
@@ -1373,17 +1459,19 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
                 {"role": "system", "content": (
                     "You are a senior game designer and developer. The user wants to create a game.\n"
                     "Your job is to create a DETAILED BLUEPRINT for this game.\n\n"
+                    "CRITICAL RULES:\n"
+                    "- Organize the code logically. Use multiple files if it improves readability and structure (e.g., separating logic, assets, and UI).\n"
+                    "- Do NOT over-engineer the architecture, but ensure it is scalable and highly polished.\n\n"
                     "Include ALL of the following in your blueprint:\n"
                     "1. GAME CONCEPT: What the game is, core gameplay loop, how to win/lose\n"
-                    "2. GAME MECHANICS: Player movement, controls (keyboard/mouse), collision detection, scoring, levels/difficulty\n"
+                    "2. IMPLEMENTATION LOGIC: Game loop logic, physics math, state management, collision algorithms\n"
                     "3. VISUAL DESIGN: Art style, color palette, background, character/sprite descriptions, particle effects, animations\n"
                     "4. UI/HUD: Score display, health bar, start screen, game over screen, pause menu\n"
                     "5. SOUND & FEEDBACK: Visual feedback for actions (screen shake, flash effects, particle bursts)\n"
-                    "6. TECHNICAL APPROACH: Canvas vs DOM, game loop (requestAnimationFrame), state management, entity system\n"
-                    "7. POLISH DETAILS: Smooth animations, easing functions, responsive design, performance optimizations\n\n"
+                    "6. POLISH DETAILS: Smooth animations, easing functions, responsive design, performance optimizations\n\n"
                     "Be SPECIFIC and DETAILED. For example, don't say 'add enemies' — say 'enemies spawn every 3 seconds from the right side, "
                     "move left at 2px/frame, have a red glow effect, and explode into 8 particles when destroyed.'\n\n"
-                    "Output ONLY the blueprint, no code. Keep it under 500 words but make every word count."
+                    "Output ONLY the blueprint, no code. Keep it under 400 words but make every word count."
                 )},
                 {"role": "user", "content": user_request}
             ]
@@ -1392,13 +1480,16 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
                 {"role": "system", "content": (
                     "You are a senior Python developer. The user wants to create a Python project.\n"
                     "Your job is to create a DETAILED BLUEPRINT for this project.\n\n"
+                    "CRITICAL RULES:\n"
+                    "- Organize the code logically into appropriate modules/files (e.g., separating logic, data models, and CLI/UI).\n"
+                    "- Do NOT over-engineer, but ensure the architecture is clean and maintainable.\n\n"
                     "Include ALL of the following:\n"
                     "1. PROJECT PURPOSE: What it does, who it's for, core features\n"
-                    "2. ARCHITECTURE: File structure, classes/modules, data flow\n"
-                    "3. KEY FEATURES: List every feature with specific implementation details\n"
+                    "2. IMPLEMENTATION LOGIC: Step-by-step logic, core algorithms, and data flow\n"
+                    "3. KEY FEATURES: List every feature with specific technical implementation details\n"
                     "4. ERROR HANDLING: Edge cases, input validation, user-friendly error messages\n"
                     "5. USER EXPERIENCE: CLI interface design, output formatting, colors (if applicable)\n"
-                    "6. TECHNICAL DETAILS: Libraries to use, algorithms, data structures\n\n"
+                    "6. LIBRARIES: Which specific third-party or built-in libraries to use and why\n\n"
                     "Be SPECIFIC. Don't say 'handle errors' — say 'validate user input is a positive integer, "
                     "catch FileNotFoundError with a helpful message showing the expected path.'\n\n"
                     "Output ONLY the blueprint, no code. Keep it under 400 words."
@@ -1411,13 +1502,16 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
                 {"role": "system", "content": (
                     "You are a senior web developer and UI/UX designer. The user wants to create a web project.\n"
                     "Your job is to create a DETAILED BLUEPRINT for this project.\n\n"
+                    "CRITICAL RULES:\n"
+                    "- Organize code cleanly (e.g., separating HTML, modular CSS, and modular JS files if complex).\n"
+                    "- Focus heavily on high-end design, animations, and robust implementation logic.\n\n"
                     "Include ALL of the following:\n"
                     "1. PROJECT CONCEPT: What it is, core features, target user experience\n"
-                    "2. PAGE LAYOUT: Header, navigation, main content sections, sidebar (if any), footer\n"
-                    "3. VISUAL DESIGN: Color scheme (specific hex codes), typography, spacing, dark/light theme\n"
-                    "4. INTERACTIVE ELEMENTS: Buttons, forms, modals, dropdowns, animations, hover effects\n"
-                    "5. RESPONSIVE DESIGN: Mobile vs desktop layout differences, breakpoints\n"
-                    "6. DATA & LOGIC: What data to display, how to manage state, any API calls or local storage\n"
+                    "2. IMPLEMENTATION LOGIC: How to manage state, DOM manipulation logic, API calls, or local storage\n"
+                    "3. PAGE LAYOUT: Header, navigation, main content sections, sidebar (if any), footer\n"
+                    "4. VISUAL DESIGN: Color scheme (specific hex codes), typography, spacing, dark/light theme\n"
+                    "5. INTERACTIVE ELEMENTS: Buttons, forms, modals, dropdowns, hover effects\n"
+                    "6. RESPONSIVE DESIGN: Mobile vs desktop layout differences, breakpoints\n"
                     "7. POLISH: CSS animations, transitions, glassmorphism, gradients, micro-interactions\n\n"
                     "Be SPECIFIC. Don't say 'add a nice background' — say 'radial gradient from #1a1a2e to #16213e, "
                     "with a subtle animated grid pattern overlay at 10% opacity.'\n\n"
@@ -1458,9 +1552,16 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
     def _force_execute_creation(self, user_request):
         """
         Two-phase creation with user approval:
-        Phase 1: Generate a detailed project blueprint via Groq → show to user
-        Phase 2 (after approval): Use the blueprint to generate high-quality code via Groq
+        Phase 1: Generate a detailed project blueprint via Groq → show to user (if requested)
+        Phase 2 (after approval or if bypassed): Use the blueprint/request to generate high-quality code
         """
+        text_lower = user_request.lower()
+        wants_blueprint = any(kw in text_lower for kw in ['blueprint', 'plan', 'design first', 'architect'])
+        
+        if not wants_blueprint:
+            logger.info("[Brain] Bypassing blueprint phase (not explicitly requested)")
+            return self._execute_creation_with_blueprint(user_request, None)
+            
         logger.info("[Brain] Phase 1: Generating blueprint for user approval")
         
         # --- PHASE 1: Generate blueprint and ask for approval ---
@@ -1534,11 +1635,22 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
         project_name = self._extract_project_name(user_request)
         project_path = f"{desktop_path}/{project_name}"
         
-        # Detect if this is a Python/non-web request
+        # Detect if this is a Python/Java/non-web request
         text_lower_req = user_request.lower()
         is_python = 'python' in text_lower_req or '.py' in text_lower_req
+        is_java = 'java' in text_lower_req.split() or 'in java' in text_lower_req
         
-        if is_python:
+        if is_java:
+            file_examples = (
+                "=== FILE: Main.java ===\n"
+                "(complete Java code here)\n\n"
+            )
+            file_rules = (
+                "- Create the main Java file (e.g. Main.java)\n"
+                "- Ensure the public class name exactly matches the filename\n"
+            )
+            is_backend = True
+        elif is_python:
             file_examples = (
                 "=== FILE: main.py ===\n"
                 "(complete Python code here)\n\n"
@@ -1547,6 +1659,7 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
                 "- Create the main Python file (main.py or app.py)\n"
                 "- Add any helper files if needed\n"
             )
+            is_backend = True
         else:
             file_examples = (
                 "=== FILE: index.html ===\n"
@@ -1559,6 +1672,7 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
             file_rules = (
                 "- Create at least: index.html, style.css, script.js\n"
             )
+            is_backend = False
         
         # Build blueprint context for the code generation prompt
         blueprint_context = ""
@@ -1619,10 +1733,31 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
             if files_written:
                 # Remember this project for follow-up modifications
                 self._last_created_project = project_path
-                run_hint = "Run it with: python main.py" if is_python else "Open index.html in your browser to try it!"
-                summary = f"Created '{project_name}' on your Desktop with: {', '.join(files_written)}. {run_hint}"
-                self.messages.append({"role": "assistant", "content": summary})
-                return summary
+                run_hint = ""
+                if is_java:
+                    main_file = "Main.java"
+                    java_files = [f for f in files_written if f.endswith('.java')]
+                    if "Main.java" not in files_written and java_files:
+                        main_file = java_files[0]
+                    class_name = main_file.replace('.java', '')
+                    run_hint = f"Compile and run with: javac {main_file} && java {class_name}"
+                elif is_python:
+                    main_file = "main.py"
+                    if "app.py" in files_written: main_file = "app.py"
+                    elif "main.py" not in files_written:
+                        py_files = [f for f in files_written if f.endswith('.py')]
+                        if py_files: main_file = py_files[0]
+                    run_hint = f"Run it with: python {main_file}"
+                else:
+                    if "index.html" in files_written:
+                        run_hint = "Open index.html in your browser to try it!"
+                
+                summary_text = f"Created '{project_name}' on your Desktop with: {', '.join(files_written)}."
+                if run_hint:
+                    summary_text += f" {run_hint}"
+                    
+                self.messages.append({"role": "assistant", "content": summary_text})
+                return summary_text
             else:
                 logger.error(f"[Brain] Could not parse any files from response:\n{raw_content[:500]}")
                 return "I generated code but couldn't parse it into files. Please try again."
@@ -1669,26 +1804,54 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
         # Read files
         existing_files = {}
         try:
+            available_files = []
+            file_paths = {}
             for scan_dir in scan_dirs:
+                if not os.path.exists(scan_dir):
+                    continue
                 for fname in os.listdir(scan_dir):
                     fpath = os.path.join(scan_dir, fname)
                     if not os.path.isfile(fpath):
                         continue
-                    if not fname.endswith(('.html', '.css', '.js', '.jsx', '.tsx', '.py', '.json')):
+                    if not fname.endswith(('.html', '.css', '.js', '.jsx', '.tsx', '.py', '.json', '.vue')):
                         continue
                     if 'lock' in fname.lower() or os.path.getsize(fpath) > 15000:
                         continue
                     
-                    # If user mentioned specific files, only read those
-                    if mentioned_files:
-                        if fname.lower() not in [f.lower() for f in mentioned_files]:
-                            continue
-                    
-                    content = self.system.read_file(fpath)
-                    if not content.startswith('Error'):
-                        # Use relative path from project root for display
-                        rel_name = fname if scan_dir == project_path else f"src/{fname}"
-                        existing_files[rel_name] = content
+                    rel_name = fname if scan_dir == project_path else f"src/{fname}"
+                    available_files.append(rel_name)
+                    file_paths[rel_name] = fpath
+
+            # Ask LLM to select files if none were explicitly mentioned and there are multiple options
+            if not mentioned_files and len(available_files) > 2:
+                logger.info(f"[Brain] Too many files ({len(available_files)}), asking LLM to filter based on request...")
+                selection_prompt = [
+                    {"role": "system", "content": "You are a file selector. Based on the user's request, identify WHICH files need to be modified. Output ONLY a comma-separated list of filenames from the provided available files list. Output nothing else. If unsure, output the 1-2 most likely files."},
+                    {"role": "user", "content": f"Available files: {', '.join(available_files)}\n\nUser request: {user_request}"}
+                ]
+                try:
+                    # Use fast model to save tokens/rate limits for simple tasks like file routing
+                    resp = self._call_llm_with_retry(self.fast_model, selection_prompt)
+                    selected_text = resp.get('message', {}).get('content', '')
+                    logger.info(f"[Brain] LLM suggested files: {selected_text}")
+                    for f in available_files:
+                        if f in selected_text or f.split('/')[-1] in selected_text:
+                            mentioned_files.append(f)
+                except Exception as e:
+                    logger.warning(f"[Brain] File selection failed: {e}")
+
+            # Read selected or all files
+            for rel_name in available_files:
+                fpath = file_paths[rel_name]
+                fname = rel_name.split('/')[-1]
+                
+                if mentioned_files:
+                    if not any(m.lower() == rel_name.lower() or m.lower() == fname.lower() for m in mentioned_files):
+                        continue
+                
+                content = self.system.read_file(fpath)
+                if not content.startswith('Error'):
+                    existing_files[rel_name] = content
         except Exception as e:
             logger.error(f"[Brain] Could not read project files: {e}")
             return f"Could not read the project files at '{project_path}': {e}"
@@ -1795,10 +1958,17 @@ HONESTY (CRITICAL — DO NOT HALLUCINATE):
     
     def _force_execute_react_creation(self, user_request):
         """
-        Handle React/Vue/Next.js project creation with blueprint approval.
+        Handle React/Vue/Next.js project creation with blueprint approval (if requested).
         Phase 1: Generate blueprint via Groq and show to user.
-        Phase 2 (after approval): Scaffold + generate code.
+        Phase 2 (after approval or bypassed): Scaffold + generate code.
         """
+        text_lower = user_request.lower()
+        wants_blueprint = any(kw in text_lower for kw in ['blueprint', 'plan', 'design first', 'architect'])
+        
+        if not wants_blueprint:
+            logger.info("[Brain] Bypassing React blueprint phase (not explicitly requested)")
+            return self._execute_react_creation_with_blueprint(user_request, None)
+            
         logger.info("[Brain] Phase 1 (React): Generating blueprint for user approval")
         
         blueprint = self._generate_project_blueprint(user_request)
@@ -2261,6 +2431,32 @@ export default App
         
         return '\n'.join(details) if len(details) > 1 else ''
 
+    def _process_conversational_response(self, text):
+        """Handle a purely conversational interaction without tools."""
+        logger.info(f"[Brain] Processing conversational response for: {text[:40]}")
+        try:
+            self.messages.append({"role": "user", "content": text})
+            self._trim_history()
+            
+            # Use streaming for natural, conversational responses (no tools)
+            model = self._select_model(text)
+            response = self._call_llm_with_retry(model, self.messages)
+            content = response.get('message', {}).get('content', '')
+            
+            if content.strip():
+                self.messages.append({"role": "assistant", "content": content})
+                return content
+            else:
+                return "Hmm, I'm not sure how to respond to that. Could you rephrase?"
+        except Exception as e:
+            error_str = str(e).lower()
+            if "not found" in error_str and ("404" in error_str or "ollama" in error_str):
+                msg = f"Cloud API rate limits exceeded, and local fallback failed because the model '{self.fallback_model}' is not installed. Please run 'ollama pull {self.fallback_model}' in your terminal."
+                logger.error(msg)
+                return msg
+            logger.error(f"Conversational response failed: {e}", exc_info=True)
+            return f"Sorry, something went wrong: {e}"
+
     @_timed
     def process_command(self, text):
         """Process a user command — fast path, blueprint approval, conversational path, then LLM with failsafe multi-turn tool calling"""
@@ -2295,23 +2491,7 @@ export default App
         # 2. Conversational path: general questions, suggestions, advice — no tools needed
         if self._is_conversational(text):
             logger.info(f"[Brain] Conversational request detected — responding without tools")
-            try:
-                self.messages.append({"role": "user", "content": text})
-                self._trim_history()
-                
-                # Use streaming for natural, conversational responses (no tools)
-                model = self._select_model(text)
-                response = self._call_llm_with_retry(model, self.messages)
-                content = response.get('message', {}).get('content', '')
-                
-                if content.strip():
-                    self.messages.append({"role": "assistant", "content": content})
-                    return content
-                else:
-                    return "Hmm, I'm not sure how to respond to that. Could you rephrase?"
-            except Exception as e:
-                logger.error(f"Conversational response failed: {e}", exc_info=True)
-                return f"Sorry, something went wrong: {e}"
+            return self._process_conversational_response(text)
 
         # 3. Use LLM with failsafe multi-turn tool calling
         try:
@@ -2366,8 +2546,17 @@ export default App
             is_modification = any(kw in text_lower for kw in modification_keywords)
             has_target = any(kw in text_lower for kw in target_keywords)
             
-            # Also trigger for "create <noun>" even without target keywords
             has_create_noun = bool(re.match(r'(?:create|build|make|get)\s+(?:me\s+)?(?:a\s+)?(?:new\s+)?\w+', text_lower))
+            
+            # --- CLEAR CONTEXT DETECTION ---
+            reset_keywords = ['new task', 'new project', 'start over', 'clear context', 'forget previous', 'different project']
+            if any(kw in text_lower for kw in reset_keywords):
+                logger.info("[Brain] User requested new task/project — clearing active project context")
+                self._last_created_project = None
+                self._active_project_root = None
+                # If the entire message is just the reset command, return immediately
+                if len(text_lower.split()) <= 4 and any(text_lower.strip() == kw for kw in reset_keywords):
+                    return "Got it! I've cleared the previous project from my memory. What would you like to do next?"
             
             # --- PRIORITY 1: If a recent project exists, prefer MODIFICATION ---
             # This prevents "make the background black" from creating a new project.
@@ -2381,14 +2570,24 @@ export default App
                     names_different = (extracted_name != 'my-project' 
                                        and extracted_name.lower() != current_name.lower())
                     
-                    if is_strong_creation and has_target and names_different:
-                        # User explicitly wants a NEW, differently-named project
-                        logger.info(f"[Brain] New project '{extracted_name}' requested (different from '{current_name}')")
+                    # Break out of modification lock if they specify a new language or explicitly say "new"
+                    is_new_stack = bool(re.search(r'\bin\s+(java|python|react|vue|angular|c\+\+|c#|ruby|go|rust)\b', text_lower))
+                    is_explicitly_new = 'new' in text_lower.split()
+                    
+                    if is_strong_creation and has_target and (names_different or is_new_stack or is_explicitly_new) and not is_modification:
+                        # User explicitly wants a NEW project
+                        logger.info(f"[Brain] New project requested (names_diff={names_different}, new_stack={is_new_stack}, explicit_new={is_explicitly_new})")
+                        self._last_created_project = None  # Clear it so it routes purely to creation
                         if self._user_wants_react:
                             self.messages.append({"role": "user", "content": text})
                             return self._force_execute_react_creation(text)
                         # Fall through to creation below
                     else:
+                        # Before forcing modification, catch any residual conversational inputs that slipped through
+                        if not is_modification and not has_target and len(text_lower.split()) < 15 and not bool(re.search(r'\b(code|file|function|class|style|color|text|ui)\b', text_lower)):
+                            logger.info(f"[Brain] Active project exists, but input seems conversational — routing to conversational handler")
+                            return self._process_conversational_response(text)
+                            
                         # Default: modify the existing project
                         logger.info(f"[Brain] Active project exists — routing to modification for '{self._last_created_project}'")
                         self.messages.append({"role": "user", "content": text})
@@ -2515,7 +2714,7 @@ export default App
                             else:
                                 # Model refused tools twice — force-execute ourselves
                                 logger.warning("[Brain] Model refused tools twice. Force-executing with code generation fallback.")
-                                return self._force_execute_with_fallback(text)
+                                return self._force_execute_creation(text)
                     
                     # --- Instruction-style detector ---
                     # Model describes steps with code blocks instead of calling tools
@@ -2526,14 +2725,14 @@ export default App
                         # If we've already tried twice with no results, force-execute
                         if iteration >= 2 and not all_results:
                             logger.warning("[Brain] Model stuck outputting instructions after 2+ iterations. Force-executing.")
-                            return self._force_execute_with_fallback(text)
+                            return self._force_execute_creation(text)
                         
                         logger.warning("[Brain] Detected instruction-style response, re-prompting to use tools")
                         
                         # Only retry a few times to prevent infinite loops, then just accept it
                         if repeated_call_count > 2:
                              logger.error("[Brain] Model is stuck hallucinating tools. Breaking loop.")
-                             return self._force_execute_with_fallback(text)
+                             return self._force_execute_creation(text)
                         
                         repeated_call_count += 1
                         
