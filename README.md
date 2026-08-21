@@ -20,8 +20,8 @@ A Python-based hybrid AI assistant that integrates ultra-fast cloud inference vi
 ## 🎯 Requirements
 
 - Python 3.8+
-- (Optional) Groq API Key for cloud inference
-- (Optional) Ollama with a code-capable model (default: `qwen2.5-coder:7b`) for local execution
+- Groq API Key for cloud inference
+- Ollama with a code-capable model (default: `qwen2.5-coder:7b`) for local execution
 - Windows (for `start` command support)
 - Microphone (for voice input)
 
