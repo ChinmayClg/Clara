@@ -5,7 +5,7 @@ if not exist venv (
     exit
 )
 call venv\Scripts\activate
-echo Starting Personal Assistant (Local Ollama)...
-echo Ensure 'ollama serve' is running and you have a model pulled
+echo Starting Personal AI Assistant (Groq / Ollama)...
+echo Ensure 'ollama serve' is running if you are using local fallback
 python -m src.main
 pause

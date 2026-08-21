@@ -47,7 +47,7 @@ A Python-based hybrid AI assistant that integrates ultra-fast cloud inference vi
 3. **Advanced Configuration**:
    - Edit `.env` to override model names without changing code:
      ```env
-     ASSISTANT_GROQ_PRIMARY_MODEL=llama-3.3-70b-versatile
+     ASSISTANT_GROQ_PRIMARY_MODEL=openai/gpt-oss-120b
      ASSISTANT_PRIMARY_MODEL=qwen2.5-coder:7b
      ```
    - Or edit `src/config.py` for full customization
@@ -122,7 +122,7 @@ The assistant is designed to be model-agnostic. You can easily upgrade or swap m
 # Groq Settings
 ASSISTANT_USE_GROQ=true
 GROQ_API_KEY=your_api_key_here
-ASSISTANT_GROQ_PRIMARY_MODEL=llama-3.3-70b-versatile
+ASSISTANT_GROQ_PRIMARY_MODEL=openai/gpt-oss-120b
 
 # Ollama Local Settings
 ASSISTANT_PRIMARY_MODEL=qwen2.5-coder:7b
