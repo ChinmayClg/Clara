@@ -1,9 +1,10 @@
 # Personal Desktop Assistant
 
-A Python-based AI assistant that runs **completely locally** using Ollama. It can control your desktop apps, write code, and help you with tasks using voice or text input.
+A Python-based hybrid AI assistant that integrates ultra-fast cloud inference via **Groq** with seamless offline fallback using **Ollama**. It can control your desktop apps, write code, and help you with tasks using voice or text input.
 
 ## ✨ Features
 
+- **Hybrid AI Architecture**: Uses Groq for ultra-low latency processing with fallback to local Ollama.
 - **Voice & Text Input**: Use voice commands or type your requests
 - **Desktop Control**: Open applications, URLs, and search the web
 - **Code Generation**: Write and read files with project context awareness
@@ -19,7 +20,8 @@ A Python-based AI assistant that runs **completely locally** using Ollama. It ca
 ## 🎯 Requirements
 
 - Python 3.8+
-- Ollama with a code-capable model (default: `qwen2.5-coder:7b`)
+- (Optional) Groq API Key for cloud inference
+- (Optional) Ollama with a code-capable model (default: `qwen2.5-coder:7b`) for local execution
 - Windows (for `start` command support)
 - Microphone (for voice input)
 
@@ -32,14 +34,20 @@ A Python-based AI assistant that runs **completely locally** using Ollama. It ca
    pip install -r requirements.txt
    ```
 
-2. **Install Ollama**:
-   - Download from [ollama.ai](https://ollama.ai)
-   - Pull the model: `ollama pull qwen2.5-coder:7b`
-   - Start Ollama: `ollama serve`
+2. **Configure AI Providers**:
+   - **Groq (Recommended for Speed)**: 
+     - Get an API key from [console.groq.com](https://console.groq.com/keys)
+     - Set `ASSISTANT_USE_GROQ=true` and `GROQ_API_KEY=your_key` in `.env`
+   - **Ollama (For 100% Local Privacy)**:
+     - Download from [ollama.ai](https://ollama.ai)
+     - Pull a model: `ollama pull qwen2.5-coder:7b`
+     - Start Ollama: `ollama serve`
+     - Set `ASSISTANT_USE_GROQ=false` in `.env`
 
-3. **Configure** (Optional):
+3. **Advanced Configuration**:
    - Edit `.env` to override model names without changing code:
      ```env
+     ASSISTANT_GROQ_PRIMARY_MODEL=llama-3.3-70b-versatile
      ASSISTANT_PRIMARY_MODEL=qwen2.5-coder:7b
      ```
    - Or edit `src/config.py` for full customization
@@ -106,11 +114,18 @@ Assistant/
 
 ## ⚙️ Configuration
 
+### 🧠 Bring Your Own Model
+The assistant is designed to be model-agnostic. You can easily upgrade or swap models if you have the hardware or API access!
+
 ### Via `.env` (recommended for model changes)
 ```env
+# Groq Settings
+ASSISTANT_USE_GROQ=true
+GROQ_API_KEY=your_api_key_here
+ASSISTANT_GROQ_PRIMARY_MODEL=llama-3.3-70b-versatile
+
+# Ollama Local Settings
 ASSISTANT_PRIMARY_MODEL=qwen2.5-coder:7b
-ASSISTANT_FAST_MODEL=qwen2.5-coder:7b
-ASSISTANT_FALLBACK_MODEL=qwen2.5-coder:7b
 ```
 
 ### Via `src/config.py` (full control)
@@ -177,7 +192,8 @@ Performance timings are logged with `[PERF]` prefix:
 
 - File operations are restricted to directories in `SAFE_DIRS`
 - Dangerous commands (delete, format, shutdown) are blocked
-- All processing runs **100% locally** — no data leaves your machine
+- Voice input uses Google Speech API (requires internet)
+- AI processing runs **100% locally** if using Ollama, or via secure cloud API if using Groq
 - Conversations are stored locally in `conversations/`
 
 ## 📄 License
@@ -186,7 +202,7 @@ This project is for personal use.
 
 ## 🙏 Acknowledgments
 
-- Powered by [Ollama](https://ollama.ai) (100% local LLM)
+- Powered by [Groq](https://groq.com) and [Ollama](https://ollama.ai) (Hybrid LLM Architecture)
 - UI built with [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
 - Speech recognition via [Google Speech API](https://cloud.google.com/speech-to-text)
 - TTS via [Edge-TTS](https://github.com/rany2/edge-tts)
